@@ -1,4 +1,4 @@
-# AWS Bedrock + AgentCore — Reference Architecture
+l# AWS Bedrock + AgentCore — Reference Architecture
 
 > **Region:** `ap-southeast-2` (Sydney) · **Framework:** CORPSS GenAI Well-Architected
 

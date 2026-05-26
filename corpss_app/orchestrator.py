@@ -1,36 +1,40 @@
 """
-CORPSS Orchestrator
+CORPSEE Orchestrator — 7-Pillar GenAI Well-Architected Framework
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Ties all 6 architectural pillars into a single, coherent request pipeline.
+Ties all 7 CORPSEE pillars into a single, coherent request pipeline.
 
                     ┌─────────────────────────────────────────────────┐
-                    │              CORPSS PIPELINE                     │
+                    │              CORPSEE PIPELINE                    │
                     │                                                  │
-     User Query ──► │  [S·GENSEC]  Guardrail input scan               │
+     User Query ──► │  [S·GENSEC]   Guardrail input scan              │
                     │       ↓                                          │
-                    │  [S·GENSUST] Intent classification               │
+                    │  [E·GENSUST]  Intent classification              │
                     │       ↓ SIMPLE ──────────────────────────────►  │
                     │       ↓ COMPLEX                                  │
-                    │  [O·GENOPS]  Fetch versioned prompt alias        │
+                    │  [O·GENOPS]   Fetch versioned prompt alias       │
                     │       ↓                                          │
-                    │  [P·GENPERF] Provisioned-throughput inference    │
+                    │  [R·GENREL]   Circuit breaker inference          │
                     │       ↓                                          │
-                    │  [R·GENREL]  Fan-out event to worker queues      │
+                    │  [P·GENPERF]  AgentCore Harness / stream        │
                     │       ↓                                          │
-                    │  [S·GENSEC]  Guardrail output scan               │
+                    │  [R·GENREL]   Fan-out event to worker queues     │
                     │       ↓                                          │
-     Response  ◄──  │  Final payload extraction                        │
+                    │  [E·GENEVAL]  Runtime trace evaluation           │
+                    │       ↓                                          │
+     Response  ◄──  │  Final payload                                   │
                     │                                                  │
-     Batch Mode ──► │  [C·GENCOST] Async 50%-cheaper batch job        │
+     Batch Mode ──► │  [C·GENCOST]  Async batch + prompt caching      │
+     Eval Mode  ──► │  [E·GENEVAL]  Offline evaluation job            │
                     └─────────────────────────────────────────────────┘
 
-Pillar map:
-  C – GENCOST  · Cost Optimisation  (async batch, 1% trace sampling)
-  O – GENOPS   · Operational Excel. (version-locked prompt aliases)
-  R – GENREL   · Reliability        (SNS+SQS fan-out blast isolation)
-  P – GENPERF  · Performance        (WebSocket streaming + Prov. Throughput)
-  S – GENSEC   · Security           (dual-sided Bedrock Guardrails)
-  S – GENSUST  · Sustainability      (right-sized model routing)
+Pillar map (CORPSEE):
+  C – GENCOST  · Cost Optimisation     (batch, prompt caching, 1% trace)
+  O – GENOPS   · Operational Excel.    (version-locked prompt aliases, OTEL)
+  R – GENREL   · Reliability           (fan-out, circuit breaker failover)
+  P – GENPERF  · Performance           (AgentCore Harness, WebSocket stream)
+  S – GENSEC   · Security              (dual-sided guardrails, microVM isolation)
+  E – GENEVAL  · Evaluation & Trust    ← NEW (5-step eval loop, trace scoring)
+  E – GENSUST  · Sustainability        (right-sized model routing)
 """
 import logging
 
@@ -38,8 +42,10 @@ from pillars import (
     GENCOSTBatchProcessor,
     GENOPSPromptManager,
     GENRELFanOutPublisher,
+    GENRELCircuitBreaker,
     GENPERFStreamHandler,
     GENSECGuardrailPerimeter,
+    GENEVALEvaluationEngine,
     GENSUSTIntentRouter,
 )
 from pillars.gensec import GuardrailIntervened
@@ -51,28 +57,32 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class CORPSSOrchestrator:
+class CORPSEEOrchestrator:
     """
-    Single entry-point for all CORPSS-compliant workloads.
+    Single entry-point for all CORPSEE-compliant workloads.
 
     Usage:
-        orc = CORPSSOrchestrator()
+        orc = CORPSEEOrchestrator()
 
         # Real-time interactive query
-        result = orc.handle_query(user_query="Summarise this loan application …")
+        result = orc.handle_query(user_query="...", account_id="ACC-001")
 
-        # Background nightly bulk audit
+        # Background nightly bulk audit (GENCOST)
         job_arn = orc.submit_batch_audit()
+
+        # Offline evaluation job (GENEVAL)
+        eval_arn = orc.submit_evaluation_job()
     """
 
     def __init__(self) -> None:
-        # Instantiate each pillar exactly once (singleton per orchestrator)
-        self.cost    = GENCOSTBatchProcessor()          # C
-        self.ops     = GENOPSPromptManager()            # O
-        self.rel     = GENRELFanOutPublisher()          # R
-        self.perf    = GENPERFStreamHandler()           # P
-        self.sec     = GENSECGuardrailPerimeter()       # S (Security)
-        self.sust    = GENSUSTIntentRouter()            # S (Sustainability)
+        self.cost      = GENCOSTBatchProcessor()        # C
+        self.ops       = GENOPSPromptManager()          # O
+        self.rel_pub   = GENRELFanOutPublisher()        # R — fan-out
+        self.rel_cb    = GENRELCircuitBreaker()         # R — circuit breaker
+        self.perf      = GENPERFStreamHandler()         # P
+        self.sec       = GENSECGuardrailPerimeter()     # S
+        self.eval      = GENEVALEvaluationEngine()      # E (Evaluation)
+        self.sust      = GENSUSTIntentRouter()          # E (Sustainability)
 
     # ────────────────────────────────────────────────────────────────────────
     # Primary pipeline — real-time interactive query
@@ -80,102 +90,138 @@ class CORPSSOrchestrator:
 
     def handle_query(
         self,
-        user_query: str,
-        account_id: str = "ACC-UNKNOWN",
-        broadcast_event: bool = True,
+        user_query:        str,
+        account_id:        str  = "ACC-UNKNOWN",
+        session_id:        str  = "SESSION-DEFAULT",
+        broadcast_event:   bool = True,
+        run_eval:          bool = False,
     ) -> dict:
         """
-        Full CORPSS pipeline for a real-time user query.
+        Full CORPSEE pipeline for a real-time user query.
 
         Steps:
           1. GENSEC  — scan untrusted input through guardrail perimeter.
           2. GENSUST — classify SIMPLE / COMPLEX to pick the energy tier.
           3. GENOPS  — hydrate the version-locked managed prompt template.
-          4. GENPERF — run inference on Provisioned Throughput (sync path).
+          4. GENREL  — circuit breaker inference (PT primary → serverless fallback).
           5. GENREL  — broadcast transaction event to fan-out worker queues.
-          6. GENSEC  — output is already guarded by dual-sided guardrail.
-
-        Returns a result dict with intent, model, and response text.
+          6. GENEVAL — (optional) invoke agent with tracing for runtime evaluation.
         """
-        logger.info("═" * 60)
-        logger.info("CORPSS pipeline START  account=%s", account_id)
-        logger.info("═" * 60)
+        logger.info("═" * 62)
+        logger.info("CORPSEE pipeline START  account=%s session=%s", account_id, session_id)
+        logger.info("═" * 62)
 
-        # ── Step 1 · S · GENSEC — Input guardrail ────────────────────────────
-        logger.info("Step 1/5 · GENSEC — scanning input through guardrail perimeter")
+        # ── Step 1 · S · GENSEC ───────────────────────────────────────────────
+        logger.info("Step 1 · GENSEC — dual-sided guardrail input scan")
         try:
-            # We do a pre-check with a lightweight model behind the guardrail.
-            # If it passes, we proceed with the full pipeline.
-            _pre_check = self.sec.safe_execute(user_query)
+            self.sec.safe_execute(user_query)
         except GuardrailIntervened:
-            logger.warning("GENSEC blocked the input. Aborting pipeline.")
+            logger.warning("GENSEC blocked input. Aborting pipeline.")
             return {
                 "status":  "BLOCKED",
                 "reason":  "Input failed Bedrock Guardrail check (prompt injection / PII).",
                 "account": account_id,
             }
 
-        # ── Step 2 · S · GENSUST — Intent classification ─────────────────────
-        logger.info("Step 2/5 · GENSUST — classifying intent and routing to energy tier")
+        # ── Step 2 · E · GENSUST ─────────────────────────────────────────────
+        logger.info("Step 2 · GENSUST — intent classification and energy-tier routing")
         sust_result = self.sust.route(user_query)
         intent      = sust_result["intent"]
         logger.info("  → intent=%s  model=%s", intent, sust_result["model_used"])
 
         if intent == "SIMPLE":
-            # Simple queries stay entirely on the low-power track — no further pillars needed.
-            logger.info("SIMPLE path complete. Skipping GENOPS/GENPERF heavy pipeline.")
-            final_response = sust_result["response"]
-            model_used     = sust_result["model_used"]
+            logger.info("SIMPLE path — staying on low-power compute track.")
+            return {
+                "status":   "OK",
+                "intent":   "SIMPLE",
+                "model":    sust_result["model_used"],
+                "account":  account_id,
+                "session":  session_id,
+                "response": sust_result["response"],
+            }
 
-        else:
-            # ── Step 3 · O · GENOPS — Managed prompt hydration ───────────────
-            logger.info("Step 3/5 · GENOPS — fetching versioned prompt alias")
-            genops_response = self.ops.execute_with_managed_prompt(
-                user_query=user_query,
-                template_variables={"account_id": account_id},
-            )
+        # ── Step 3 · O · GENOPS ───────────────────────────────────────────────
+        logger.info("Step 3 · GENOPS — fetching PROD-ACTIVE prompt alias")
+        prompt_meta = self.ops.get_prompt_metadata()
+        genops_response = self.ops.execute_with_managed_prompt(
+            user_query=user_query,
+            template_variables={"account_id": account_id},
+            trace_context={"trace_id": session_id},
+        )
+        logger.info("  → prompt=%s version=%s", prompt_meta.get("prompt_name"), prompt_meta.get("prompt_version"))
 
-            # ── Step 4 · P · GENPERF — Provisioned throughput inference ──────
-            logger.info("Step 4/5 · GENPERF — running inference on Provisioned Throughput")
-            final_response = self.perf.converse_sync(genops_response)
-            model_used     = "ProvisionedThroughput"
+        # ── Step 4 · R · GENREL — Circuit Breaker Inference ──────────────────
+        logger.info("Step 4 · GENREL — circuit breaker inference (PT → serverless fallback)")
+        cb_result      = self.rel_cb.reliable_inference(genops_response)
+        final_response = cb_result["response"]
+        logger.info("  → path=%s  model=%s", cb_result["path"], cb_result["model_used"])
 
-        # ── Step 5 · R · GENREL — Fan-out broadcast ───────────────────────────
+        # ── Step 5 · R · GENREL — Fan-Out Broadcast ──────────────────────────
         if broadcast_event:
-            logger.info("Step 5/5 · GENREL — broadcasting transaction to worker queues")
-            self.rel.broadcast_transaction(
+            logger.info("Step 5 · GENREL — broadcasting to fan-out worker queues")
+            self.rel_pub.broadcast_transaction(
                 account_id=account_id,
-                payload_summary=user_query[:200],  # truncate for event envelope
+                payload_summary=user_query[:200],
             )
 
-        logger.info("═" * 60)
-        logger.info("CORPSS pipeline END  ✅")
-        logger.info("═" * 60)
+        # ── Step 6 · E · GENEVAL — Runtime Evaluation (optional) ─────────────
+        eval_result = None
+        if run_eval:
+            logger.info("Step 6 · GENEVAL — runtime trace evaluation")
+            try:
+                score      = self.eval.invoke_and_evaluate(user_query, session_id)
+                eval_result = score.to_dict()
+                logger.info(
+                    "  → faithfulness=%s  rag_sources=%d  tool_calls=%d",
+                    score.faithfulness_flag(),
+                    len(score.rag_sources),
+                    len(score.tool_calls),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("GENEVAL trace evaluation skipped: %s", exc)
+                eval_result = {"status": "skipped", "reason": str(exc)}
+
+        logger.info("═" * 62)
+        logger.info("CORPSEE pipeline END  ✅")
+        logger.info("═" * 62)
 
         return {
-            "status":    "OK",
-            "intent":    intent,
-            "model":     model_used,
-            "account":   account_id,
-            "response":  final_response,
+            "status":      "OK",
+            "intent":      intent,
+            "model":       cb_result["model_used"],
+            "path":        cb_result["path"],
+            "account":     account_id,
+            "session":     session_id,
+            "response":    final_response,
+            "eval":        eval_result,
+            "prompt_meta": prompt_meta,
         }
 
     # ────────────────────────────────────────────────────────────────────────
-    # Batch pipeline — C · GENCOST: 50 % cheaper async processing
+    # Batch pipeline — C · GENCOST
     # ────────────────────────────────────────────────────────────────────────
 
     def submit_batch_audit(self, job_name: str = "Nightly_Compliance_Bulk_Audit") -> dict:
-        """
-        Submit a nightly bulk compliance audit as an async Bedrock Batch job.
-        50 % cheaper than synchronous on-demand execution.
-        """
+        """Submit a nightly bulk compliance audit as an async Bedrock Batch job (50% cheaper)."""
         logger.info("[GENCOST] Submitting batch audit: %s", job_name)
         job_arn = self.cost.submit_batch_job(job_name=job_name)
         return {"status": "SUBMITTED", "jobArn": job_arn}
 
     def check_batch_status(self, job_arn: str) -> dict:
-        """Poll the status of a previously submitted batch job."""
         return self.cost.get_job_status(job_arn)
+
+    # ────────────────────────────────────────────────────────────────────────
+    # Evaluation pipeline — E · GENEVAL
+    # ────────────────────────────────────────────────────────────────────────
+
+    def submit_evaluation_job(self, job_name: str = "CORPSEE_Offline_Eval") -> dict:
+        """
+        Submit a Bedrock offline Model Evaluation job against the S3 ground-truth dataset.
+        Measures Faithfulness, Helpfulness, and Coherence automatically.
+        """
+        logger.info("[GENEVAL] Submitting offline evaluation job: %s", job_name)
+        job_arn = self.eval.submit_model_evaluation_job(job_name=job_name)
+        return {"status": "SUBMITTED", "jobArn": job_arn}
 
 
 # ── CLI demo ─────────────────────────────────────────────────────────────────
@@ -183,20 +229,21 @@ class CORPSSOrchestrator:
 if __name__ == "__main__":
     import json
 
-    orc = CORPSSOrchestrator()
+    orc = CORPSEEOrchestrator()
 
-    print("\n" + "▓" * 60)
-    print("  CORPSS DEMO — Real-time interactive query (SIMPLE)")
-    print("▓" * 60)
+    print("\n" + "▓" * 64)
+    print("  CORPSEE DEMO — Real-time SIMPLE query")
+    print("▓" * 64)
     result = orc.handle_query(
-        user_query="What is the current interest rate for a 30-year fixed mortgage?",
+        user_query="What is the current RBA cash rate?",
         account_id="ACC-001",
+        session_id="SESSION-001",
     )
     print(json.dumps(result, indent=2))
 
-    print("\n" + "▓" * 60)
-    print("  CORPSS DEMO — Real-time interactive query (COMPLEX)")
-    print("▓" * 60)
+    print("\n" + "▓" * 64)
+    print("  CORPSEE DEMO — Real-time COMPLEX query with GENEVAL")
+    print("▓" * 64)
     result = orc.handle_query(
         user_query=(
             "Analyse the risk profile of this commercial loan application for a $4.2M "
@@ -204,11 +251,13 @@ if __name__ == "__main__":
             "tenant concentration risk, and APRA prudential standards CPS 220."
         ),
         account_id="ACC-002",
+        session_id="SESSION-002",
+        run_eval=True,
     )
     print(json.dumps(result, indent=2))
 
-    print("\n" + "▓" * 60)
-    print("  CORPSS DEMO — Batch audit submission (GENCOST)")
-    print("▓" * 60)
-    batch = orc.submit_batch_audit()
-    print(json.dumps(batch, indent=2))
+    print("\n" + "▓" * 64)
+    print("  CORPSEE DEMO — Offline evaluation job (GENEVAL)")
+    print("▓" * 64)
+    eval_job = orc.submit_evaluation_job()
+    print(json.dumps(eval_job, indent=2))
