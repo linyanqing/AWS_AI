@@ -106,13 +106,14 @@ def cmd_setup():
         env["guardrail_version"] = "DRAFT"
         print(f"  ✅  Guardrail created: {gr['guardrailId']}")
     except ClientError as e:
-        if "already exists" in str(e):
-            # Fetch existing
+        if e.response["Error"]["Code"] in ("ConflictException", "ResourceConflictException") \
+                or "already exists" in str(e):
+            # Guardrail already exists — look it up by name
             grs = br.list_guardrails()["guardrails"]
             g   = next(x for x in grs if x["name"] == "corpss-demo-perimeter")
-            env["guardrail_id"]      = g["guardrailId"]
+            env["guardrail_id"]      = g["id"]
             env["guardrail_version"] = "DRAFT"
-            print(f"  ℹ️   Guardrail already exists: {g['guardrailId']}")
+            print(f"  ℹ️   Guardrail already exists: {g['id']}")
         else:
             raise
 
